@@ -1,0 +1,219 @@
+---
+title: "All the R you need for STAT 220 - tidy"
+author: "Professor McNamara"
+date: "Fall 2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval = TRUE, warning = FALSE)
+```
+
+## Packages
+
+We use three packages in this course:
+
+```{r, message=FALSE}
+library(Lock5Data)
+library(data.table)
+library(infer)
+```
+
+## Reading in data
+
+```{r, message=FALSE}
+GSS <- read_csv("data/GSS_clean.csv")
+DT <- data.table::copy(GSS)
+setDT(DT) # make sure we have a datatable
+```
+
+## Plotting
+
+
+```{r}
+# one categorical
+ggplot(DT) + geom_bar(aes(x = marital_status))
+
+# two categorical
+ggplot(DT) + geom_bar(aes(x = marital_status, fill = born_in_us))
+ggplot(DT) + geom_bar(aes(x = marital_status, fill = born_in_us), position = "dodge")
+
+# one numeric
+ggplot(DT) + geom_histogram(aes(x = highest_year_of_school_completed), binwidth = 2)
+ggplot(DT) + geom_boxplot(aes(x = 1, y = highest_year_of_school_completed))
+
+# one numeric, one categorical
+ggplot(DT) + geom_boxplot(aes(x = marital_status, y = highest_year_of_school_completed))
+
+# two numeric
+ggplot(DT) + geom_point(aes(
+  x = highest_year_of_school_completed,
+  y = highest_year_school_completed_spouse
+))
+```
+
+## Summary statistics
+
+
+```{r}
+# one categorical
+ DT[, list(n = .N), by = .(marital_status)][, prop := n / sum(n)][]
+
+# two categorical
+DT[, list(n = .N),
+   by = .(marital_status, general_happiness)][, prop := n / sum(n)][]
+
+# one numeric
+
+# not nicely named
+DT[, c(mean = lapply(.SD, mean, na.rm = TRUE),
+                median = lapply(.SD, median, na.rm = TRUE)),
+            .SDcols = c('highest_year_of_school_completed')]
+
+# use setnames to provide better names
+setnames(DT[, c(mean = lapply(.SD, mean, na.rm = TRUE),
+       median = lapply(.SD, median, na.rm = TRUE)),
+   .SDcols = c('highest_year_of_school_completed')], new = c('mean', 'median'))[]
+
+
+#  we are using this column a lot, so lets declare a variable to minimise typing
+target_col <- 'highest_year_of_school_completed'
+
+DT[!is.na(highest_year_of_school_completed), 
+   lapply(.SD, sd), .SDcols = target_col][]
+
+# or name the result directly with setnames
+setnames(DT[!is.na(highest_year_of_school_completed), 
+   lapply(.SD, sd), .SDcols = target_col], new = 'sd')[]
+
+
+DT[!is.na(highest_year_of_school_completed), 
+  {max = max(.SD) 
+  min = min(.SD)
+  range = max - min 
+  IQR = IQR(highest_year_of_school_completed, na.rm = TRUE)
+  list(range = range, IQR = IQR)}, 
+  .SDcols = target_col]
+# range and IQR
+
+
+
+DT[!is.na(highest_year_of_school_completed), 
+  {min = min(.SD)
+  lower_hinge = quantile(highest_year_of_school_completed, .25)
+  median = median(highest_year_of_school_completed)
+  upper_hinge = quantile(highest_year_of_school_completed, .75)
+  max = max(.SD) 
+  list(min = min, lower_hinge = lower_hinge,median = median,  
+       upper_hinge = upper_hinge, max = max)}, 
+  .SDcols = target_col]
+
+# five number summary
+# why the mix of .SD and the actual column name?
+
+DT[, cor(x = highest_year_of_school_completed,
+         y = highest_year_school_completed_spouse,
+         use = "complete.obs")][]
+ # correlation
+```
+
+## Working with data
+
+```{r}
+# fix NA issue
+GSS <- GSS %>%
+  drop_na(highest_year_of_school_completed)
+
+# turn character to numeric
+GSS <- GSS %>%
+  mutate(Age = parse_number(age_of_respondent))
+
+# filter observations
+GSS %>%
+  filter(Age > 91)
+
+## chaining in data.table
+
+DT[!is.na(highest_year_of_school_completed), Age := readr::parse_number(age_of_respondent)
+   ][Age > 91,][]
+
+# returns 0  rows
+```
+
+## Modeling/inference
+
+```{r}
+# linear model
+m1 <- DT[, lm(highest_year_of_school_completed ~ highest_year_school_completed_spouse)]
+
+summary(m1) # model summary
+
+predict(m1, newdata = data.frame(highest_year_school_completed_spouse = 9),
+        interval = "confidence")
+
+predict(m1, newdata = data.frame(highest_year_school_completed_spouse = 9),
+        interval = "prediction")
+
+
+
+# bootstrapping
+bootstrap_sample <- GSS %>%
+  specify(response = Age) %>%
+  generate(reps = 1, type = "bootstrap")
+
+boot <- GSS %>%
+  specify(response = Age) %>%
+  generate(reps = 1000, type = "bootstrap") %>%
+  calculate(stat = "mean")
+
+# one proportion
+GSS %>%
+  prop_test(
+    response = self_emp_or_works_for_somebody,
+    explanatory = NULL, 
+    alternative = "greater", p = 0.1
+  )
+
+# two proportions
+GSS %>%
+  prop_test(response = should_marijuana_be_made_legal, 
+            explanatory = self_emp_or_works_for_somebody, 
+            order = c("Self-employed", "Someone else"))
+
+# one mean
+GSS %>%
+  drop_na(born_in_us) %>%
+  t_test(response = highest_year_of_school_completed, 
+         explanatory = NULL,
+         mu = 12, alternative = "greater")
+
+# two means
+GSS %>%
+  drop_na(born_in_us) %>%
+  t_test(
+    response = highest_year_of_school_completed,
+    explanatory = born_in_us, order = c("No", "Yes")
+  )
+
+# ANOVA
+a1 <- aov(Age ~ marital_status, data = GSS)
+a1 %>% 
+  summary()
+a1 %>% 
+  TukeyHSD(conf.level = 0.90) # differences
+
+# Chi-square
+GSS %>%
+  chisq_test(response = marital_status, explanatory = general_happiness) # independence
+
+GSS %>%
+  chisq_test(response = general_happiness, p = c(0.14, 0.56, 0.30)) # GoF
+```
+
+## Probability
+
+```{r}
+pnorm(1.96, lower.tail = FALSE) # normal distribution function
+qnorm(0.25, mean = 100, sd = 5) # normal quantile function
+```
+
